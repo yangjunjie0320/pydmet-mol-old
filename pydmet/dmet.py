@@ -54,7 +54,7 @@ def build_ccsd_solver(f1e_eo, h2e_eo, dm0=None):
     m.build()
 
     mf = _RHF(m)
-    mf.verbose = 4
+    mf.verbose = 0
     mf._ovlp   = numpy.eye(neo) 
     mf._eri    = h2e_eo
     mf._hcore  = f1e_eo
@@ -62,6 +62,7 @@ def build_ccsd_solver(f1e_eo, h2e_eo, dm0=None):
     mf.kernel(dm0=dm0)
 
     cc = pyscf.cc.CCSD(mf)
+    cc.verbose = 0
     cc.kernel()
 
     dm1_eo = cc.make_rdm1(ao_repr=True)
@@ -119,6 +120,7 @@ class MoleculeDMET(DMET):
         nao, nlo    = coeff_ao_lo.shape
 
         mf = pyscf.scf.RHF(self.mol)
+        mf.verbose = 0
         mf.kernel()
 
         ovlp_ao  = mf.get_ovlp()
@@ -211,7 +213,7 @@ class MoleculeDMET(DMET):
                 dm_hl_ao += reduce(numpy.dot, (coeff_ao_eo_env, dm1_env_imp_eo, coeff_ao_eo_imp.T)) * 0.5
 
             dmet_ene_cur = dmet_ene
-            print("SCF energy = %16.12f, DMET energy = %16.12f" % (mf.energy_elec()[0], dmet_ene))
+            # print("SCF energy = %16.12f, DMET energy = %16.12f" % (mf.energy_elec()[0], dmet_ene))
 
             def get_dm_err(vcors):
                 vcor_lo = numpy.zeros((nlo, nlo))
@@ -243,7 +245,7 @@ class MoleculeDMET(DMET):
             def callback(vcors):
                 nonlocal fitting_iter
                 dm_err = get_dm_err(vcors)
-                print("fitting_iter = %6d, dm_err = %12.8f" % (fitting_iter, dm_err))
+                # print("fitting_iter = %6d, dm_err = %12.8f" % (fitting_iter, dm_err))
                 fitting_iter += 1
 
             vcors_init = numpy.zeros((nlo_imp_tot,))
@@ -285,7 +287,7 @@ class MoleculeDMET(DMET):
             is_dmet_converged = is_dmet_converged or (dmet_iter >= self.dmet_max_iter)
             is_dmet_max_iter  = (dmet_iter >= self.dmet_max_iter)
 
-            print("DMET iter = %4d, DMET energy = %16.12f, DMET error = %12.8f" % (dmet_iter, dmet_ene_cur, ene_err))
+            print("DMET iter = %4d, DMET energy = %16.12f, DMET error = %6.4e, vcors_err = %6.4e, dm_err = %6.4e" % (dmet_iter, dmet_ene_cur, ene_err, vcors_err, dm_err))
 
             dm_ll_lo_pre = dm_ll_lo_cur
             vcors_pre    = vcors_cur
