@@ -1,136 +1,223 @@
-from pickletools import optimize
 import sys, os
 from functools import reduce
-from telnetlib import AO
 
 import numpy
 import scipy
 
 import pyscf
-from pyscf.tools.dump_mat import dump_rec
+from pyscf import gto, scf, cc
+from pyscf import ao2mo, lo, tools
+from pyscf.lib import logger
 
-class _RHF(pyscf.scf.hf.RHF):
-    _ovlp = None
+class EmbeddingResults(object):
+    pass
+
+class SolverMixin(object):
+    tmp_dir  = None
+    def kernel(self, emb_prob, load_dir, save_dir):
+        raise NotImplementedError
+            
+class RCCSD(SolverMixin):
+    def kernel(self, emb_prob, load_dir, save_dir):
+        scf_res = None
+        if load_dir is not None:
+            scf_file = os.path.join(load_dir, 'rhf.chk')
+            assert os.path.exists(scf_file)
+            scf_res = pyscf.scf.chkfile.load(scf_file, 'scf')
+
+            cc_file = os.path.join(load_dir, 'rccsd.chk')
+            assert os.path.exists(cc_file)
+            cc_res = pyscf.cc.chkfile.load(cc_file, 'cc')
+
+        m = Mole()
+        mf = scf.RHF(m)
+        mf.load_scf(scf_res)
+        mf.kernel()
+
+        cc = RCCSD(mf)
+        cc.__dict__.update(cc_res)
+        cc.kernel()
+
+        if save_dir is not None:
+            pyscf.scf.chkfile.save(save_dir, 'scf', mf)
+            pyscf.cc.chkfile.save(save_dir, 'cc', cc)
+
+        res = EmbeddingResults()
+        res.mf = mf
+        res.dm_hl = cc.make_rdm1()
+        res.dm_hh = cc.make_rdm2()
+        
+
+
+
+class DMETMFMixin(object):
+    _ovlp  = None
     _hcore = None
-    _eri = None
+    _eri   = None
 
+class DMETMixin(object):
+    """
+    The base class for DMET. Different DMET methods can be classified by different
+    spin symmetry.
+    """
+    verbose = 4
+    stdout  = sys.stdout
+
+    conv_tol  = 1e-6
+    max_cycle = 50
+
+    def _method_name(self):
+        method_name = []
+        for c in self.__class__.__mro__:
+            if issubclass(c, DMETMixin) and c is not DMETMixin:
+                method_name.append(c.__name__)
+        return '-'.join(method_name)
+
+    def dump_flags(self):
+        log = logger.new_logger(self, self.verbose)
+
+        log.info("\n")
+        log.info("******** %s ********", self.__class__)
+        log.info('method = %s', self._method_name())
+
+    def build_mf(self, m, dm0=None):
+        raise NotImplementedError
+
+    def build_emb_basis(self, imp_idx, dm0=None):
+        """
+        Build the embedding basis for the impurity.
+        """
+        raise NotImplementedError
+
+    def build_emb_prob(self, coeff_ao_eo):
+        raise NotImplementedError
+
+    def get_emb_solver(self, ifrag):
+        solver = self.solver
+        assert not isinstance(solver, str)
+        assert solver is not None
+
+        if hasattr(solver, '__getitem__'):
+            s = solver[ifrag]
+        else:
+            s = solver
+
+        assert isinstance(s, SolverMixin)
+        return s
+
+    def transform_dm_ao_to_lo(self, dm_ao):
+        raise NotImplementedError
+
+    def transform_dm_lo_to_ao(self, dm_lo):
+        raise NotImplementedError
+
+    def transform_h_ao_to_lo(self, dm_ao):
+        raise NotImplementedError
+
+    def transform_h_ao_to_lo(self, dm_lo):
+        raise NotImplementedError
+
+    def kernel(self, dm0=None):
+        self.dump_flags()
+        
+        m   = self.m
+        mf  = self.build_mf(m, dm0=dm0)
+        assert mf.converged
+        coeff_ao_lo = self.coeff_ao_lo
+
+        dm_ll_ao_pre = mf.make_rdm1()
+        dm_ll_lo_pre = self.transform_dm_ao_to_lo(dm_ll_ao_pre, coeff_ao_lo=coeff_ao_lo, mf=mf)
+        dm_ll_ao_cur = None
+        dm_ll_lo_cur = None
+        
+        emb_res_list = []
+
+        for ifrag in range(self.nfrag):
+            imp_idx     = self.imp_idx_list[ifrag]
+            env_idx     = self.env_idx_list[ifrag]
+            res         = self.build_emb_basis(imp_idx, env_idx, dm0)
+            coeff_ao_eo = res[0]
+            coeff_lo_eo = res[1]
+
+            emb_solver = self.get_emb_solver(ifrag=ifrag, dmet_iter=0)
+            emb_prob   = self.build_emb_prob(
+                coeff_lo_eo=coeff_lo_eo, coeff_ao_eo=coeff_ao_eo
+                )
+            emb_res    = emb_solver.kernel(emb_prob)
+            emb_res_list.append(emb_res)
+
+class RHFMole(pyscf.scf.hf.RHF, DMETMFMixin):
     def get_ovlp(self, mol=None):
-        return self._ovlp
+        ovlp = self._ovlp
+        if ovlp is None:
+            if mol is None:
+                mol = self.mol
+            ovlp = pyscf.scf.hf.get_ovlp(mol)
+        return ovlp
 
     def get_hcore(self, mol=None):
-        assert self._hcore is not None
-        return self._hcore
+        hcore = self._hcore
+        if hcore is None:
+            if mol is None:
+                mol = self.mol
+            hcore = pyscf.scf.hf.get_hcore(mol)
+        return hcore
 
-    def energy_nuc(self):
-        return 0.0
-
-def build_scf_solver(f1e_eo, h2e_eo, dm0=None):
-    neo = f1e_eo.shape[0]
-
-    m = pyscf.gto.Mole()
-    m.incore_anyway = True
-    m.nelectron = int(round(numpy.einsum('ii->', dm0)))
-    m.build()
-
-    mf = _RHF(m)
-    mf.verbose = 4
-    mf._ovlp   = numpy.eye(neo)
-    mf._eri    = h2e_eo
-    mf._hcore  = f1e_eo
-    mf.max_cycle = 500
-    mf.kernel(dm0=dm0)
-
-    dm1_eo = mf.make_rdm1()
-    dm2_eo = mf.make_rdm2()
-
-    return mf, dm1_eo, dm2_eo
-
-def build_ccsd_solver(f1e_eo, h2e_eo, dm0=None):
-    neo = f1e_eo.shape[0]
-
-    m = pyscf.gto.Mole()
-    m.incore_anyway = True
-    m.nelectron = int(round(numpy.einsum('ii->', dm0)))
-    m.build()
-
-    mf = _RHF(m)
-    mf.verbose = 0
-    mf._ovlp   = numpy.eye(neo) 
-    mf._eri    = h2e_eo
-    mf._hcore  = f1e_eo
-    mf.max_cycle = 500
-    mf.kernel(dm0=dm0)
-
-    cc = pyscf.cc.CCSD(mf)
-    cc.verbose = 0
-    cc.kernel()
-
-    dm1_eo = cc.make_rdm1(ao_repr=True)
-    dm2_eo = cc.make_rdm2(ao_repr=True)
-    
-    return cc, dm1_eo, dm2_eo
-
-class Fragment(object):
-    pass
-
-class DMET(object):
-    pass
-
-class MoleculeDMET(DMET):
-    dmet_max_iter = 10
-    dmet_tol = 1e-4
-    
-    solver_max_iter = 100
-    solver_tol  = 1e-8
-
-    fitting_max_iter = 500
-    fitting_tol      = 1e-8
-
-    def __init__(self, mol, coeff_ao_lo=None, imp_lo_idx=None):
-        assert isinstance(mol, pyscf.gto.Mole)
-        self.mol = mol
-        self.stdout = mol.stdout
+class RDMETWithHF(DMETMixin):
+    '''The class for solving spin restricted DMET problem in molecular system
+    and the supercell gamma point periodic system.
+    '''
+    def __init__(self, mol, coeff_ao_lo=None, imp_lo_list=None, solver="ccsd"):
+        self.m       = mol
+        self.stdout  = mol.stdout
+        self.verbose = mol.verbose
 
         assert coeff_ao_lo is not None
         self.coeff_ao_lo = coeff_ao_lo
 
-        assert imp_lo_idx is not None
-        self.imp_lo_idx = imp_lo_idx
+        assert imp_lo_list is not None
+        self.imp_lo_list = imp_lo_list
 
-    def build_frags(self):
-        nao, nlo = self.coeff_ao_lo.shape
+        self.solver = solver
 
-        frag_list = []
-        for ifrag, imp_lo_idx in enumerate(self.imp_lo_idx):
-            env_lo_idx = numpy.setdiff1d(numpy.arange(nlo), imp_lo_idx)
-            frag = Fragment()
-            frag.mol         = mol
-            frag.imp_lo_idx  = imp_lo_idx
-            frag.env_lo_idx  = env_lo_idx
-            frag.scf_solver  = None
-            frag.ci_solver   = None
-            frag_list.append(frag)
+    def transform_dm_ao_to_lo(self, dm_ao, coeff_ao_lo=None, mf=None):
+        assert isinstance(mf, RHFMole)
+        ovlp_ao  = mf.get_ovlp()
+        dm_lo    = reduce(numpy.dot, (coeff_ao_lo.T, ovlp_ao, dm_ao, ovlp_ao, coeff_ao_lo))
+        return dm_lo
 
-        self.frag_list = frag_list
+    def transform_dm_lo_to_ao(self, dm_lo, coeff_ao_lo=None, mf=None):
+        assert isinstance(mf, RHFMole)
+        dm_ao    = reduce(numpy.dot, (coeff_ao_lo, dm_lo, coeff_ao_lo.T))
+        return dm_ao
+
+    def transform_h_ao_to_lo(self, h_ao, coeff_ao_lo=None, mf=None):
+        assert isinstance(mf, RHFMole)
+        h_lo    = reduce(numpy.dot, (coeff_ao_lo, h_ao, coeff_ao_lo.T))
+        return h_lo
+
+    def transform_h_lo_to_ao(self, h_lo, coeff_ao_lo=None, mf=None):
+        assert isinstance(mf, RHFMole)
+        ovlp_ao = mf.get_ovlp()
+        h_ao    = reduce(numpy.dot, (coeff_ao_lo, ovlp_ao, h_lo, ovlp_ao, coeff_ao_lo.T))
+        return h_ao
         
-    def kernel(self):
-        self.build_frags()
-
+    def kernel(self, dm0=None):
         coeff_ao_lo = self.coeff_ao_lo
         nao, nlo    = coeff_ao_lo.shape
 
-        mf = pyscf.scf.RHF(self.mol)
-        mf.verbose = 0
-        mf.kernel()
+        mf       = self.build_scf(dm0=dm0)
+        dm_ll_ao = mf.make_rdm1()
 
-        ovlp_ao  = mf.get_ovlp()
-        hcore_ao = mf.get_hcore()
-        fock_ao  = mf.get_fock()
-        eri_ao   = mf._eri
+        coeff_ao_lo = self.coeff_ao_lo
+        ovlp_ao     = mf.get_ovlp()
+        hcore_ao    = mf.get_hcore()
+        fock_ao     = mf.get_fock()
+        eri_ao      = mf._eri
         assert eri_ao is not None
 
         dm_ll_ao = mf.make_rdm1()
-        dm_ll_lo = reduce(numpy.dot, (coeff_ao_lo.T, ovlp_ao, dm_ll_ao, ovlp_ao, coeff_ao_lo))
+        dm_ll_lo = self.transform_dm_ao_to_lo(dm_ll_ao, ovlp_ao)
         
         dm_ll_lo_pre = dm_ll_lo
         dm_ll_lo_cur = None
@@ -309,9 +396,9 @@ if __name__ == '__main__':
            H         0.8784893276   -0.0368266484    0.9330933285
            H        -0.3195928737    0.7774121014    0.3045311682
            O         3.0208058979    0.6163509592   -0.7203724735
-           O         2.5143150551   -0.2441947452    1.8660305097
            H         3.3050376617    1.4762564664   -1.0295977027
            H         2.0477791789    0.6319690134   -0.7090745711
+           O         2.5143150551   -0.2441947452    1.8660305097
            H         2.8954132119   -1.0661605274    2.1741344071
            H         3.0247679096    0.0221180670    1.0833062723
         """,
