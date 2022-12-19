@@ -17,3 +17,29 @@
   version), while the rest part corresponds to a small bath, with the naturally converged HF solution from
   DMET object, no integral transformation is needed, just transorm the density matrix to this embedding 
   basis.
+- The child classes shall not repeat the method names, for example,
+```python
+class DMET(object): # in rhf.py
+    pass
+
+class RHF(DMET): # in rhf.py
+    pass
+
+class KRHF(RHF): # in krhf.py
+    pass
+
+class MoleculeRHF(RHF): # in rhf.py
+    pass
+
+class LatticeRHF(RHF): # in rhf.py
+    pass
+
+class LatticeKRHF(LatticeRHF, KRHF): # in krhf.py
+    pass
+
+class ModelRHF(RHF): # in rhf.py
+    pass
+
+class ModelKRHF(ModelRHF, KRHF): # in krhf.py
+    pass
+```
