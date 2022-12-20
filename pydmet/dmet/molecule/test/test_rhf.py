@@ -9,6 +9,8 @@ import pydmet
 from pydmet.tools import mol_lo_tools
 from pydmet import solver
 
+TOL = os.environ.get("TOL", 1e-8)
+
 def build_3h2o(basis="sto3g"):
     import pyscf
     from   pyscf import lo
@@ -35,8 +37,8 @@ def build_3h2o(basis="sto3g"):
     mf = pyscf.scf.RHF(mol)
     mf.verbose = 0
     mf.max_cycle = 100
-    mf.conv_tol  = 1e-10
-    mf.conv_tol_grad = 1e-10
+    mf.conv_tol  = TOL
+    mf.conv_tol_grad = TOL
     mf.kernel()
 
     return mol, mf, frag_atms_list
@@ -48,7 +50,7 @@ def build_lo(mf, basis="sto3g"):
         coeff_ao_lo = numpy.loadtxt(lo_path, delimiter=",")
     else:
         pm = lo.PM(mf.mol, mf.mo_coeff)
-        pm.conv_tol = 1e-10
+        pm.conv_tol = TOL
         coeff_ao_lo = pm.kernel()
         numpy.savetxt(lo_path, coeff_ao_lo, delimiter=",", fmt="% 20.16f")
     return coeff_ao_lo
@@ -60,7 +62,7 @@ def test_set_up(basis="sto3g"):
 
     imp_lo_idx_list = mol_lo_tools.partition_lo_to_imps(
         imp_atms_list, mol=mol, coeff_ao_lo=coeff_ao_lo,
-        min_weight=0.8
+        min_weight=0.4
     )
 
     dmet_obj = pydmet.RHF(
@@ -89,10 +91,10 @@ def test_dmet_rhf(basis="sto3g"):
     )
 
     rhf_solver = solver.RHF()
-    rhf_solver.max_cycle = 0
-    rhf_solver.conv_tol = 1e-8
-    rhf_solver.conv_tol_grad = 1e-8
-    rhf_solver.verbose = 5
+    rhf_solver.max_cycle = 100
+    rhf_solver.conv_tol = TOL
+    rhf_solver.conv_tol_grad = TOL
+    rhf_solver.verbose = 0
 
     dmet_obj = pydmet.RHF(
         mf, solver=rhf_solver, 
@@ -101,7 +103,7 @@ def test_dmet_rhf(basis="sto3g"):
         is_mu_fitting=False, 
         is_vcor_fitting=False
         )
-    dmet_obj.verbose   = 5
+    dmet_obj.verbose   = 0
     dmet_obj._hcore_ao = hcore_ao
     dmet_obj._ovlp_ao  = ovlp_ao
     dmet_obj._fock_ao  = fock_ao
@@ -145,13 +147,71 @@ def test_dmet_rhf(basis="sto3g"):
         dn_dmu_hf   += emb_res.dn_dmu_hf
         dm_hl_ao    += dmet_obj.get_emb_rdm1_ao(emb_res, emb_basis)
 
-    nelec_hl = dmet_obj.get_nelec_tot(dm_ao=dm_hl_ao)
-    nelec_lo_ll = dmet_obj.get_nelec_tot(dm_lo=dm_ll_lo)
-    nelec_ll = dmet_obj.get_nelec_tot(dm_ao=dm_ll_ao)
+    print("dn_dmu_hf = %20.12f" % dn_dmu_hf)
 
-    assert abs(energy_elec - ene_hf_ref) < 1e-5
-    assert numpy.linalg.norm(dm_hl_ao - rdm1_hf_ref) < 1e-5
+    mu_list     = [4e-2, 2e-2, 1e-2, 4e-4, 2e-4, 1e-4]
+
+    for mu in mu_list:
+
+        dm_hl_ao = 0.0
+        
+        for ifrag in range(nfrag):
+            imp_lo_idx = imp_lo_idx_list[ifrag]
+            env_lo_idx = env_lo_idx_list[ifrag]
+
+            emb_basis = dmet_obj.make_emb_basis(
+                imp_lo_idx, env_lo_idx, 
+                dm_ll_ao=dm_ll_ao,
+                dm_ll_lo=dm_ll_lo,
+                )
+
+            emb_prob  = dmet_obj.make_emb_prob(
+                mu=mu, emb_basis=emb_basis,
+                dm_ll_ao=dm_ll_ao,
+                dm_ll_lo=dm_ll_lo,
+                )
+
+            emb_res = rhf_solver.kernel(
+                emb_prob=emb_prob,
+                save_dir=None,
+                load_dir=None,
+            )
+
+            dm_hl_ao    += dmet_obj.get_emb_rdm1_ao(emb_res, emb_basis)
+
+        nelec_tot_1 = numpy.einsum("ij,ji", dm_hl_ao, ovlp_ao)
     
+        dm_hl_ao = 0.0
+        
+        for ifrag in range(nfrag):
+            imp_lo_idx = imp_lo_idx_list[ifrag]
+            env_lo_idx = env_lo_idx_list[ifrag]
+
+            emb_basis = dmet_obj.make_emb_basis(
+                imp_lo_idx, env_lo_idx, 
+                dm_ll_ao=dm_ll_ao,
+                dm_ll_lo=dm_ll_lo,
+                )
+
+            emb_prob  = dmet_obj.make_emb_prob(
+                mu=-mu, emb_basis=emb_basis,
+                dm_ll_ao=dm_ll_ao,
+                dm_ll_lo=dm_ll_lo,
+                )
+
+            emb_res = rhf_solver.kernel(
+                emb_prob=emb_prob,
+                save_dir=None,
+                load_dir=None,
+            )
+
+            dm_hl_ao    += dmet_obj.get_emb_rdm1_ao(emb_res, emb_basis)
+
+        nelec_tot_2 = numpy.einsum("ij,ji", dm_hl_ao, ovlp_ao)
+
+        dn_dmu_fd = (nelec_tot_1 - nelec_tot_2) / (2.0 * mu)
+        print("dn_dmu_fd = %20.12f" % dn_dmu_fd)
+        
 
 if __name__ == '__main__':
     # test_set_up()

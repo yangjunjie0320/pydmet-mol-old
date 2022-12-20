@@ -1049,15 +1049,6 @@ class RHF(DMET):
         h1e_eo   = reduce(numpy.dot, (coeff_ao_eo.T, hcore_ao, coeff_ao_eo))
         f1e_eo   = reduce(numpy.dot, (coeff_ao_eo.T, fock_ao,  coeff_ao_eo))
         f1e_eo  -= (j1e_eo - k1e_eo * 0.5)
-
-        # Stupid way of building f1e_eo
-        dm_val_ao   = reduce(numpy.dot, (coeff_ao_eo, dm_ll_eo, coeff_ao_eo.T))
-        dm_cor_ao   = dm_ll_ao - dm_val_ao
-        veff_cor_ao = self.get_veff_ao(dm_ao=dm_cor_ao)
-        veff_cor_eo = reduce(numpy.dot, (coeff_ao_eo.T, veff_cor_ao, coeff_ao_eo))
-        f1e_eo_ref  = h1e_eo + veff_cor_eo
-
-        print("f1e_eo - f1e_eo_ref = %6.4e" % numpy.linalg.norm(f1e_eo - f1e_eo_ref))
         
         id_imp  = numpy.zeros((neo, neo))
         id_imp[imp_eo_idx, imp_eo_idx] = 1.0
@@ -1079,7 +1070,7 @@ class RHF(DMET):
         emb_prob.nelecs = nelecs
         emb_prob.dm0    = dm_ll_eo
         emb_prob.h1e    = h1e_eo
-        emb_prob.f1e    = f1e_eo_ref
+        emb_prob.f1e    = f1e_eo
         emb_prob.mu     = mu
         emb_prob.id_imp = id_imp
         emb_prob.h2e    = eri_eo_full
