@@ -1,4 +1,23 @@
 # pydmet
+We follow [code standards of pyscf](https://pyscf.org/code-rule.html#), and recommend to refer to
+[google python style guide](https://google.github.io/styleguide/pyguide.html).
+## Write Test Cases
+- Unit tests: These tests focus on individual units of code, such as functions or methods. These tests shall ensure the robustness of both simple functions and more complex drivers between version changes. Unit tests are usually included in the same file as the code they are testing.
+```
+.
+├── code_you_want_to_test.py
+└── test
+    └── test_code_you_want_to_test.py
+```
+- The test runner `pytest` is used to make it easy to run all of your tests at once, [`pytest`](https://docs.pytest.org/en/7.2.x/) command will run all of the tests in the `./tests` directory.
+- Each test shall contain some assertions, which will be evaluated to determine if the test passes or fails. The `assert` statement is used to make assertions about the code being tested. If the assertion is true, the test passes. If the assertion is false, the test fails.
+- End-to-end tests: These tests simulate the behavior of a user interacting with your program, and are used to ensure that the program is working correctly from start to finish. End-to-end tests are located in the `./examples` directory.
+- Examples for modules should be placed in the appropriate directory inside the `/examples ` directory. While the examples should be light enough to run on a modest personal computer, the examples should not be trivial. Instead, the point of the examples is to showcase the functionality of the module.
+
+## Notes from Junjie
+- Some _standard_ test cases for the program, like three water molecules, or a small
+lattice, and Hubbard models. As the three water case may not be a very good system to perform
+DMET, other suggestions are welcome.
 - Fragmet is a set of LO indices, which contains two parts, one is the impurity part (defined by the user), 
   the other is the environment part (obtained by the `build_env` function, which will exclude the virtual
   and core orbitals). The `build_emb_basis` function will stack the impurity orbitals and construct the 

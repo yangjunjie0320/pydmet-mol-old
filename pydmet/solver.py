@@ -88,6 +88,7 @@ class SolverMixin(object):
         nocc = mo_occ[mo_occ >  0].size
         orbv = mo_coeff[:, mo_occ == 0]
         orbo = mo_coeff[:, mo_occ >  0]
+
         imp_1e_eo = emb_prob.id_imp
         mu_1e_oo = reduce(numpy.dot, (orbo.T, imp_1e_eo, orbo))
         mu_1e_vv = reduce(numpy.dot, (orbv.T, imp_1e_eo, orbv))
@@ -97,17 +98,16 @@ class SolverMixin(object):
         # set singlet=None, generate function for CPHF type response kernel
         vresp = mf.gen_response(singlet=None, hermi=1)   
         def fvind(x):  # For singlet, closed shell ground state
-            dm   = reduce(numpy.dot, (orbv, x.reshape(nvir,nocc)*2, orbo.T))
+            dm   = reduce(numpy.dot, (orbv, x.reshape(nvir, nocc)*2, orbo.T))
             v1ao = vresp(dm+dm.T)
             return reduce(numpy.dot, (orbv.T, v1ao, orbo)).ravel()
 
         z_vo  = cphf.solve(fvind, mo_energy, mo_occ, mu_1e_vo,
-                           max_cycle=100, tol=1e-8)[0]
-        z_vo  = z_vo.reshape(nvir,nocc)
-        c_imp_v = orbv[imp_eo_idx, :]
-        c_imp_o = orbo[imp_eo_idx, :]
-        cc_vo   = numpy.dot(c_imp_v.T, c_imp_o)
-        dn_dmu = 4.0 * numpy.einsum("ai,ai->", cc_vo, z_vo)
+                           max_cycle=100, tol=1e-8, 
+                           verbose=self.verbose)[0]
+        z_vo  = z_vo.reshape(nvir, nocc)
+
+        dn_dmu = 4.0 * numpy.einsum("ai,ai->", mu_1e_vo, z_vo)
         return mf, dn_dmu
 
     def energy_elec(self, rdm1, rdm2, emb_prob=None):
